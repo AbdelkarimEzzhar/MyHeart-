@@ -1,0 +1,52 @@
+# --- Java / Maven ---
+target/
+*.jar
+*.war
+*.ear
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# --- Node.js ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.env
+*.egg-info/
+dist/
+build/
+
+# --- React / Vite ---
+dist/
+.build/
+.DS_Store
+
+# --- IDE / Editors ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Logs & OS ---
+*.log
+logs/
+Thumbs.db
+.DS_Store
+
+# --- Secrets (Très Important) ---
+# On ignore tous les fichiers .env pour ne pas exposer les mots de passe
+.env
+*.env
+!*.env.example

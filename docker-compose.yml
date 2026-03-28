@@ -1,0 +1,341 @@
+services:
+  consul:
+    image: consul:1.14
+    container_name: consul
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0
+
+    ports: [ "8501:8500" ]
+    networks: [ myheart-network ]
+    restart: unless-stopped
+
+  # ─── Databases ───────────────────────────────────────────
+
+  patient-db:
+    image: postgres:15-alpine
+    container_name: patient-db
+    environment:
+      POSTGRES_DB: patientdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - patient-db-data:/var/lib/postgresql/data
+    networks: [ myheart-network ]
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  appointment-db:
+    image: mongo:7
+    container_name: appointment-db
+    volumes:
+      - appointment-db-data:/data/db
+    networks: [ myheart-network ]
+
+  billing-db:
+    image: mysql:8
+    container_name: billing-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: billingdb
+    volumes:
+      - billing-db-data:/var/lib/mysql
+    networks: [ myheart-network ]
+    healthcheck:
+      test: [ "CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  medical-record-db:
+    image: postgres:15-alpine
+    container_name: medical-record-db
+    environment:
+      POSTGRES_DB: medicalrecorddb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - medical-record-db-data:/var/lib/postgresql/data
+    networks: [ myheart-network ]
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  lab-db:
+    image: mongo:7
+    container_name: lab-db
+    volumes:
+      - lab-db-data:/data/db
+    networks: [ myheart-network ]
+
+  doctor-db:
+    image: postgres:15-alpine
+    container_name: doctor-db
+    environment:
+      POSTGRES_DB: doctordb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - doctor-db-data:/var/lib/postgresql/data
+    networks: [ myheart-network ]
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.1
+    container_name: kafka-broker
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://kafka:9092
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: MkQkQzdXQkSVIFM0AcqLoA
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks: [ myheart-network ]
+    healthcheck:
+      test: [ "CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: kraft
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9092
+    depends_on:
+      - kafka
+    networks: [ myheart-network ]
+
+  # ─── Microservices ────────────────────────────────────────
+
+  doctor-service:
+    build: ./doctor-service
+    container_name: doctor-service
+    ports: [ "8086:8086" ]
+    depends_on:
+      doctor-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      consul:
+        condition: service_started
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://doctor-db:5432/doctordb
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      CONSUL_HOST: consul
+      CONSUL_PORT: 8500
+      SERVICE_NAME: doctor-service
+      SERVICE_PORT: 8086
+      SPRING_CLOUD_CONSUL_HOST: consul
+      SPRING_CLOUD_CONSUL_PORT: 8500
+      SPRING_CLOUD_CONSUL_DISCOVERY_HOSTNAME: doctor-service
+      SPRING_CLOUD_CONSUL_DISCOVERY_PORT: 8086
+    networks: [ myheart-network ]
+
+  patient-service:
+    build: ./patient-service
+    container_name: patient-service
+    ports: [ "8081:8081" ]
+    depends_on:
+      patient-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      consul:
+        condition: service_started
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://patient-db:5432/patientdb
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      CONSUL_HOST: consul
+      CONSUL_PORT: 8500
+      SERVICE_NAME: patient-service
+      SERVICE_PORT: 8081
+    networks: [ myheart-network ]
+
+  appointment-service:
+    build: ./appointment-service
+    container_name: appointment-service
+    ports: [ "8082:8082" ]
+    depends_on:
+      appointment-db:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      consul:
+        condition: service_started
+    environment:
+      MONGO_URI: mongodb://appointment-db:27017/appointmentdb
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      CONSUL_HOST: consul
+      CONSUL_PORT: 8500
+      SERVICE_NAME: appointment-service
+      SERVICE_PORT: 8082
+    networks: [ myheart-network ]
+
+  billing-service:
+    build: ./billing-service
+    container_name: billing-service
+    ports: [ "8083:8083" ]
+    depends_on:
+      billing-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      consul:
+        condition: service_started
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://billing-db:3306/billingdb
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      CONSUL_HOST: consul
+      CONSUL_PORT: 8500
+      SERVICE_NAME: billing-service
+      SERVICE_PORT: 8083
+    networks: [ myheart-network ]
+
+  medical-record-service:
+    build: ./medical-record-service
+    container_name: medical-record-service
+    ports: [ "8085:8085" ]
+    depends_on:
+      medical-record-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      consul:
+        condition: service_started
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://medical-record-db:5432/medicalrecorddb
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      CONSUL_HOST: consul
+      CONSUL_PORT: 8500
+      SERVICE_NAME: medical-record-service
+      SERVICE_PORT: 8085
+    networks: [ myheart-network ]
+
+  lab-report-service:
+    build: ./lab-report-service
+    container_name: lab-report-service
+    ports: [ "8084:8084" ]
+    depends_on:
+      lab-db:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      consul:
+        condition: service_started
+    environment:
+      MONGO_URI: mongodb://lab-db:27017/labdb
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      CONSUL_HOST: consul
+      CONSUL_PORT: 8500
+      SERVICE_NAME: lab-report-service
+      SERVICE_PORT: 8084
+    networks: [ myheart-network ]
+
+  # ─── Context Service (Node.js) ──────────────────────────
+
+  context-service:
+    build: ./context-service
+    container_name: context-service
+    ports: [ "8087:8087" ]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      consul:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      PORT: 8087
+      KAFKA_BROKERS: kafka:29092
+      CONSUL_HOST: consul
+      CONSUL_PORT: 8500
+      SERVICE_NAME: context-service
+      SERVICE_PORT: 8087
+    networks: [ myheart-network ]
+
+  # ─── API Gateway ──────────────────────────────────────────
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: api-gateway
+    ports: [ "8080:8080" ]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      consul:
+        condition: service_started
+    volumes:
+      - api-gateway-data:/app/data
+    environment:
+      CONSUL_HOST: consul
+      CONSUL_PORT: 8500
+      SERVICE_NAME: api-gateway
+      SERVICE_PORT: 8080
+      AUTH_USER: admin
+      AUTH_PASS: changeme
+      JWT_SECRET: verysecret_jwt_key
+    networks: [ myheart-network ]
+
+  # ─── Frontend ─────────────────────────────────────────────
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    # Host port changed to 3001 to avoid conflicts if 3000 is in use
+    ports: [ "3001:80" ]
+    depends_on: [ api-gateway ]
+    networks: [ myheart-network ]
+
+# ─── Volumes & Networks ───────────────────────────────────────
+
+volumes:
+  patient-db-data:
+    driver: local
+  doctor-db-data:
+    driver: local
+  appointment-db-data:
+    driver: local
+  billing-db-data:
+    driver: local
+  medical-record-db-data:
+    driver: local
+  lab-db-data:
+    driver: local
+  kafka-data:
+    driver: local
+  api-gateway-data:
+    driver: local
+
+networks:
+  myheart-network:
+    driver: bridge
